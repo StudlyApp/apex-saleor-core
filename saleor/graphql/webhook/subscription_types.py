@@ -1,5 +1,4 @@
 import graphene
-from django.contrib.auth.models import AnonymousUser
 from django.utils import timezone
 from graphene import AbstractType, ObjectType, Union
 from rx import Observable
@@ -30,12 +29,15 @@ from ..core.descriptions import (
     ADDED_IN_34,
     ADDED_IN_35,
     ADDED_IN_36,
+    ADDED_IN_37,
+    ADDED_IN_38,
     PREVIEW_FEATURE,
 )
 from ..core.scalars import PositiveDecimal
 from ..core.types import NonNullList
 from ..payment.enums import TransactionActionEnum
 from ..payment.types import TransactionItem
+from ..plugins.dataloaders import plugin_manager_promise_callback
 from ..shipping.dataloaders import ShippingMethodChannelListingByChannelSlugLoader
 from ..shipping.types import ShippingMethod
 from ..translations import types as translation_types
@@ -81,119 +83,7 @@ class Event(graphene.Interface):
 
     @classmethod
     def get_type(cls, object_type: str):
-        types = {
-            WebhookEventAsyncType.ADDRESS_CREATED: AddressCreated,
-            WebhookEventAsyncType.ADDRESS_UPDATED: AddressUpdated,
-            WebhookEventAsyncType.ADDRESS_DELETED: AddressDeleted,
-            WebhookEventAsyncType.APP_INSTALLED: AppInstalled,
-            WebhookEventAsyncType.APP_UPDATED: AppUpdated,
-            WebhookEventAsyncType.APP_DELETED: AppDeleted,
-            WebhookEventAsyncType.APP_STATUS_CHANGED: AppStatusChanged,
-            WebhookEventAsyncType.ATTRIBUTE_CREATED: AttributeCreated,
-            WebhookEventAsyncType.ATTRIBUTE_UPDATED: AttributeUpdated,
-            WebhookEventAsyncType.ATTRIBUTE_DELETED: AttributeDeleted,
-            WebhookEventAsyncType.ATTRIBUTE_VALUE_CREATED: AttributeValueCreated,
-            WebhookEventAsyncType.ATTRIBUTE_VALUE_UPDATED: AttributeValueUpdated,
-            WebhookEventAsyncType.ATTRIBUTE_VALUE_DELETED: AttributeValueDeleted,
-            WebhookEventAsyncType.CATEGORY_CREATED: CategoryCreated,
-            WebhookEventAsyncType.CATEGORY_UPDATED: CategoryUpdated,
-            WebhookEventAsyncType.CATEGORY_DELETED: CategoryDeleted,
-            WebhookEventAsyncType.CHANNEL_CREATED: ChannelCreated,
-            WebhookEventAsyncType.CHANNEL_UPDATED: ChannelUpdated,
-            WebhookEventAsyncType.CHANNEL_DELETED: ChannelDeleted,
-            WebhookEventAsyncType.CHANNEL_STATUS_CHANGED: ChannelStatusChanged,
-            WebhookEventAsyncType.GIFT_CARD_CREATED: GiftCardCreated,
-            WebhookEventAsyncType.GIFT_CARD_UPDATED: GiftCardUpdated,
-            WebhookEventAsyncType.GIFT_CARD_DELETED: GiftCardDeleted,
-            WebhookEventAsyncType.GIFT_CARD_STATUS_CHANGED: GiftCardStatusChanged,
-            WebhookEventAsyncType.MENU_CREATED: MenuCreated,
-            WebhookEventAsyncType.MENU_UPDATED: MenuUpdated,
-            WebhookEventAsyncType.MENU_DELETED: MenuDeleted,
-            WebhookEventAsyncType.MENU_ITEM_CREATED: MenuItemCreated,
-            WebhookEventAsyncType.MENU_ITEM_UPDATED: MenuItemUpdated,
-            WebhookEventAsyncType.MENU_ITEM_DELETED: MenuItemDeleted,
-            WebhookEventAsyncType.ORDER_CREATED: OrderCreated,
-            WebhookEventAsyncType.ORDER_UPDATED: OrderUpdated,
-            WebhookEventAsyncType.ORDER_CONFIRMED: OrderConfirmed,
-            WebhookEventAsyncType.ORDER_FULLY_PAID: OrderFullyPaid,
-            WebhookEventAsyncType.ORDER_FULFILLED: OrderFulfilled,
-            WebhookEventAsyncType.ORDER_CANCELLED: OrderCancelled,
-            WebhookEventAsyncType.DRAFT_ORDER_CREATED: DraftOrderCreated,
-            WebhookEventAsyncType.DRAFT_ORDER_UPDATED: DraftOrderUpdated,
-            WebhookEventAsyncType.DRAFT_ORDER_DELETED: DraftOrderDeleted,
-            WebhookEventAsyncType.PRODUCT_CREATED: ProductCreated,
-            WebhookEventAsyncType.PRODUCT_UPDATED: ProductUpdated,
-            WebhookEventAsyncType.PRODUCT_DELETED: ProductDeleted,
-            WebhookEventAsyncType.PRODUCT_VARIANT_CREATED: ProductVariantCreated,
-            WebhookEventAsyncType.PRODUCT_VARIANT_UPDATED: ProductVariantUpdated,
-            WebhookEventAsyncType.PRODUCT_VARIANT_OUT_OF_STOCK: (
-                ProductVariantOutOfStock
-            ),
-            WebhookEventAsyncType.PRODUCT_VARIANT_BACK_IN_STOCK: (
-                ProductVariantBackInStock
-            ),
-            WebhookEventAsyncType.PRODUCT_VARIANT_DELETED: ProductVariantDeleted,
-            WebhookEventAsyncType.SALE_CREATED: SaleCreated,
-            WebhookEventAsyncType.SALE_UPDATED: SaleUpdated,
-            WebhookEventAsyncType.SALE_DELETED: SaleDeleted,
-            WebhookEventAsyncType.SALE_TOGGLE: SaleToggle,
-            WebhookEventAsyncType.INVOICE_REQUESTED: InvoiceRequested,
-            WebhookEventAsyncType.INVOICE_DELETED: InvoiceDeleted,
-            WebhookEventAsyncType.INVOICE_SENT: InvoiceSent,
-            WebhookEventAsyncType.FULFILLMENT_CREATED: FulfillmentCreated,
-            WebhookEventAsyncType.FULFILLMENT_CANCELED: FulfillmentCanceled,
-            WebhookEventAsyncType.CUSTOMER_CREATED: CustomerCreated,
-            WebhookEventAsyncType.CUSTOMER_UPDATED: CustomerUpdated,
-            WebhookEventAsyncType.COLLECTION_CREATED: CollectionCreated,
-            WebhookEventAsyncType.COLLECTION_UPDATED: CollectionUpdated,
-            WebhookEventAsyncType.COLLECTION_DELETED: CollectionDeleted,
-            WebhookEventAsyncType.CHECKOUT_CREATED: CheckoutCreated,
-            WebhookEventAsyncType.CHECKOUT_UPDATED: CheckoutUpdated,
-            WebhookEventAsyncType.PAGE_CREATED: PageCreated,
-            WebhookEventAsyncType.PAGE_UPDATED: PageUpdated,
-            WebhookEventAsyncType.PAGE_DELETED: PageDeleted,
-            WebhookEventAsyncType.PAGE_TYPE_CREATED: PageTypeCreated,
-            WebhookEventAsyncType.PAGE_TYPE_UPDATED: PageTypeUpdated,
-            WebhookEventAsyncType.PAGE_TYPE_DELETED: PageTypeDeleted,
-            WebhookEventAsyncType.PERMISSION_GROUP_CREATED: PermissionGroupCreated,
-            WebhookEventAsyncType.PERMISSION_GROUP_UPDATED: PermissionGroupUpdated,
-            WebhookEventAsyncType.PERMISSION_GROUP_DELETED: PermissionGroupDeleted,
-            WebhookEventAsyncType.SHIPPING_PRICE_CREATED: ShippingPriceCreated,
-            WebhookEventAsyncType.SHIPPING_PRICE_UPDATED: ShippingPriceUpdated,
-            WebhookEventAsyncType.SHIPPING_PRICE_DELETED: ShippingPriceDeleted,
-            WebhookEventAsyncType.SHIPPING_ZONE_CREATED: ShippingZoneCreated,
-            WebhookEventAsyncType.SHIPPING_ZONE_UPDATED: ShippingZoneUpdated,
-            WebhookEventAsyncType.SHIPPING_ZONE_DELETED: ShippingZoneDeleted,
-            WebhookEventAsyncType.STAFF_CREATED: StaffCreated,
-            WebhookEventAsyncType.STAFF_UPDATED: StaffUpdated,
-            WebhookEventAsyncType.STAFF_DELETED: StaffDeleted,
-            WebhookEventAsyncType.TRANSACTION_ACTION_REQUEST: TransactionActionRequest,
-            WebhookEventAsyncType.TRANSLATION_CREATED: TranslationCreated,
-            WebhookEventAsyncType.TRANSLATION_UPDATED: TranslationUpdated,
-            WebhookEventAsyncType.VOUCHER_CREATED: VoucherCreated,
-            WebhookEventAsyncType.VOUCHER_UPDATED: VoucherUpdated,
-            WebhookEventAsyncType.VOUCHER_DELETED: VoucherDeleted,
-            WebhookEventAsyncType.WAREHOUSE_CREATED: WarehouseCreated,
-            WebhookEventAsyncType.WAREHOUSE_UPDATED: WarehouseUpdated,
-            WebhookEventAsyncType.WAREHOUSE_DELETED: WarehouseDeleted,
-            WebhookEventSyncType.PAYMENT_AUTHORIZE: PaymentAuthorize,
-            WebhookEventSyncType.PAYMENT_CAPTURE: PaymentCaptureEvent,
-            WebhookEventSyncType.PAYMENT_REFUND: PaymentRefundEvent,
-            WebhookEventSyncType.PAYMENT_VOID: PaymentVoidEvent,
-            WebhookEventSyncType.PAYMENT_CONFIRM: PaymentConfirmEvent,
-            WebhookEventSyncType.PAYMENT_PROCESS: PaymentProcessEvent,
-            WebhookEventSyncType.PAYMENT_LIST_GATEWAYS: PaymentListGateways,
-            WebhookEventSyncType.ORDER_FILTER_SHIPPING_METHODS: (
-                OrderFilterShippingMethods
-            ),
-            WebhookEventSyncType.CHECKOUT_FILTER_SHIPPING_METHODS: (
-                CheckoutFilterShippingMethods
-            ),
-            WebhookEventSyncType.SHIPPING_LIST_METHODS_FOR_CHECKOUT: (
-                ShippingListMethodsForCheckout
-            ),
-        }
-        return types.get(object_type)
+        return WEBHOOK_TYPES_MAP.get(object_type)
 
     @classmethod
     def resolve_type(cls, instance, info):
@@ -214,7 +104,7 @@ class Event(graphene.Interface):
 
     @staticmethod
     def resolve_issuing_principal(_root, info):
-        if isinstance(info.context.requestor, AnonymousUser):
+        if not info.context.requestor:
             return None
         return info.context.requestor
 
@@ -515,6 +405,14 @@ class OrderCancelled(ObjectType, OrderBase):
         )
 
 
+class OrderMetadataUpdated(ObjectType, OrderBase):
+    class Meta:
+        interfaces = (Event,)
+        description = (
+            "Event sent when order metadata is updated." + ADDED_IN_38 + PREVIEW_FEATURE
+        )
+
+
 class DraftOrderCreated(ObjectType, OrderBase):
     class Meta:
         interfaces = (Event,)
@@ -583,6 +481,16 @@ class GiftCardStatusChanged(ObjectType, GiftCardBase):
         description = (
             "Event sent when gift card status has changed."
             + ADDED_IN_32
+            + PREVIEW_FEATURE
+        )
+
+
+class GiftCardMetadataUpdated(ObjectType, GiftCardBase):
+    class Meta:
+        interfaces = (Event,)
+        description = (
+            "Event sent when gift card metadata is updated."
+            + ADDED_IN_38
             + PREVIEW_FEATURE
         )
 
@@ -670,7 +578,7 @@ class ProductBase(AbstractType):
         description="The product the event relates to.",
     )
     category = graphene.Field(
-        "saleor.graphql.product.types.products.Category",
+        "saleor.graphql.product.types.categories.Category",
         description="The category of the product.",
     )
 
@@ -706,6 +614,16 @@ class ProductDeleted(ObjectType, ProductBase):
         interfaces = (Event,)
         description = (
             "Event sent when product is deleted." + ADDED_IN_32 + PREVIEW_FEATURE
+        )
+
+
+class ProductMetadataUpdated(ObjectType, ProductBase):
+    class Meta:
+        interfaces = (Event,)
+        description = (
+            "Event sent when product metadata is updated."
+            + ADDED_IN_38
+            + PREVIEW_FEATURE
         )
 
 
@@ -750,6 +668,16 @@ class ProductVariantDeleted(ObjectType, ProductVariantBase):
         description = (
             "Event sent when product variant is deleted."
             + ADDED_IN_32
+            + PREVIEW_FEATURE
+        )
+
+
+class ProductVariantMetadataUpdated(ObjectType, ProductVariantBase):
+    class Meta:
+        interfaces = (Event,)
+        description = (
+            "Event sent when product variant metadata is updated."
+            + ADDED_IN_38
             + PREVIEW_FEATURE
         )
 
@@ -930,6 +858,24 @@ class FulfillmentCanceled(ObjectType, FulfillmentBase):
         )
 
 
+class FulfillmentApproved(ObjectType, FulfillmentBase):
+    class Meta:
+        interfaces = (Event,)
+        description = (
+            "Event sent when fulfillment is approved." + ADDED_IN_37 + PREVIEW_FEATURE
+        )
+
+
+class FulfillmentMetadataUpdated(ObjectType, FulfillmentBase):
+    class Meta:
+        interfaces = (Event,)
+        description = (
+            "Event sent when fulfillment metadata is updated."
+            + ADDED_IN_38
+            + PREVIEW_FEATURE
+        )
+
+
 class UserBase(AbstractType):
     user = graphene.Field(
         "saleor.graphql.account.types.User",
@@ -960,9 +906,19 @@ class CustomerUpdated(ObjectType, UserBase):
         )
 
 
+class CustomerMetadataUpdated(ObjectType, UserBase):
+    class Meta:
+        interfaces = (Event,)
+        description = (
+            "Event sent when customer user metadata is updated."
+            + ADDED_IN_38
+            + PREVIEW_FEATURE
+        )
+
+
 class CollectionBase(AbstractType):
     collection = graphene.Field(
-        "saleor.graphql.product.types.products.Collection",
+        "saleor.graphql.product.types.collections.Collection",
         channel=graphene.String(
             description="Slug of a channel for which the data should be returned."
         ),
@@ -999,6 +955,16 @@ class CollectionDeleted(ObjectType, CollectionBase):
         )
 
 
+class CollectionMetadataUpdated(ObjectType, CollectionBase):
+    class Meta:
+        interfaces = (Event,)
+        description = (
+            "Event sent when collection metadata is updated."
+            + ADDED_IN_38
+            + PREVIEW_FEATURE
+        )
+
+
 class CheckoutBase(AbstractType):
     checkout = graphene.Field(
         "saleor.graphql.checkout.types.Checkout",
@@ -1024,6 +990,16 @@ class CheckoutUpdated(ObjectType, CheckoutBase):
         interfaces = (Event,)
         description = (
             "Event sent when checkout is updated." + ADDED_IN_32 + PREVIEW_FEATURE
+        )
+
+
+class CheckoutMetadataUpdated(ObjectType, CheckoutBase):
+    class Meta:
+        interfaces = (Event,)
+        description = (
+            "Event sent when checkout metadata is updated."
+            + ADDED_IN_38
+            + PREVIEW_FEATURE
         )
 
 
@@ -1230,6 +1206,16 @@ class ShippingZoneDeleted(ObjectType, ShippingZoneBase):
         )
 
 
+class ShippingZoneMetadataUpdated(ObjectType, ShippingZoneBase):
+    class Meta:
+        interfaces = (Event,)
+        description = (
+            "Event sent when shipping zone metadata is updated."
+            + ADDED_IN_38
+            + PREVIEW_FEATURE
+        )
+
+
 class StaffCreated(ObjectType, UserBase):
     class Meta:
         interfaces = (Event,)
@@ -1301,6 +1287,26 @@ class TransactionActionRequest(ObjectType):
         _, transaction_action_data = root
         transaction_action_data: TransactionActionData
         return transaction_action_data
+
+
+class TransactionItemMetadataUpdated(ObjectType):
+    transaction = graphene.Field(
+        TransactionItem,
+        description="Look up a transaction." + PREVIEW_FEATURE,
+    )
+
+    class Meta:
+        interfaces = (Event,)
+        description = (
+            "Event sent when transaction item metadata is updated."
+            + ADDED_IN_38
+            + PREVIEW_FEATURE
+        )
+
+    @staticmethod
+    def resolve_transaction(root, _info):
+        _, transaction_item = root
+        return transaction_item
 
 
 class TranslationTypes(Union):
@@ -1384,6 +1390,16 @@ class VoucherDeleted(ObjectType, VoucherBase):
         )
 
 
+class VoucherMetadataUpdated(ObjectType, VoucherBase):
+    class Meta:
+        interfaces = (Event,)
+        description = (
+            "Event sent when voucher metadata is updated."
+            + ADDED_IN_38
+            + PREVIEW_FEATURE
+        )
+
+
 class WarehouseBase(AbstractType):
     warehouse = graphene.Field(
         "saleor.graphql.warehouse.types.Warehouse",
@@ -1459,15 +1475,34 @@ class ShippingListMethodsForCheckout(ObjectType, CheckoutBase):
     )
 
     @staticmethod
-    def resolve_shipping_methods(root, info):
+    @plugin_manager_promise_callback
+    def resolve_shipping_methods(root, info, manager):
         _, checkout = root
-        return resolve_shipping_methods_for_checkout(info, checkout)
+        return resolve_shipping_methods_for_checkout(info, checkout, manager)
 
     class Meta:
         interfaces = (Event,)
         description = (
             "List shipping methods for checkout." + ADDED_IN_36 + PREVIEW_FEATURE
         )
+
+
+class CalculateTaxes(ObjectType):
+    tax_base = graphene.Field(
+        "saleor.graphql.core.types.taxes.TaxableObject", required=True
+    )
+
+    class Meta:
+        interfaces = (Event,)
+        description = (
+            "Synchronous webhook for calculating checkout/order taxes."
+            + ADDED_IN_37
+            + PREVIEW_FEATURE
+        )
+
+    def resolve_tax_base(root, info):
+        _, tax_base = root
+        return tax_base
 
 
 class CheckoutFilterShippingMethods(ObjectType, CheckoutBase):
@@ -1479,9 +1514,10 @@ class CheckoutFilterShippingMethods(ObjectType, CheckoutBase):
     )
 
     @staticmethod
-    def resolve_shipping_methods(root, info):
+    @plugin_manager_promise_callback
+    def resolve_shipping_methods(root, info, manager):
         _, checkout = root
-        return resolve_shipping_methods_for_checkout(info, checkout)
+        return resolve_shipping_methods_for_checkout(info, checkout, manager)
 
     class Meta:
         interfaces = (Event,)
@@ -1545,6 +1581,16 @@ class WarehouseDeleted(ObjectType, WarehouseBase):
         )
 
 
+class WarehouseMetadataUpdated(ObjectType, WarehouseBase):
+    class Meta:
+        interfaces = (Event,)
+        description = (
+            "Event sent when warehouse metadata is updated."
+            + ADDED_IN_38
+            + PREVIEW_FEATURE
+        )
+
+
 class Subscription(ObjectType):
     event = graphene.Field(
         Event,
@@ -1556,108 +1602,128 @@ class Subscription(ObjectType):
         return Observable.from_([root])
 
 
-# List of events is created because `Event` type was change from `Union` to `Interface`
-# so all subscription events types need to be added manually to `Schema`.
-
-SUBSCRIPTION_EVENTS_TYPES = [
-    AddressCreated,
-    AddressUpdated,
-    AddressDeleted,
-    AppInstalled,
-    AppUpdated,
-    AppDeleted,
-    AppStatusChanged,
-    AttributeCreated,
-    AttributeUpdated,
-    AttributeDeleted,
-    AttributeValueCreated,
-    AttributeValueUpdated,
-    AttributeValueDeleted,
-    CategoryCreated,
-    CategoryUpdated,
-    CategoryDeleted,
-    ChannelCreated,
-    ChannelUpdated,
-    ChannelDeleted,
-    ChannelStatusChanged,
-    GiftCardCreated,
-    GiftCardUpdated,
-    GiftCardDeleted,
-    GiftCardStatusChanged,
-    MenuCreated,
-    MenuUpdated,
-    MenuDeleted,
-    MenuItemCreated,
-    MenuItemUpdated,
-    MenuItemDeleted,
-    OrderCreated,
-    OrderUpdated,
-    OrderConfirmed,
-    OrderFullyPaid,
-    OrderCancelled,
-    OrderFulfilled,
-    DraftOrderCreated,
-    DraftOrderUpdated,
-    DraftOrderDeleted,
-    ProductCreated,
-    ProductUpdated,
-    ProductDeleted,
-    ProductVariantCreated,
-    ProductVariantUpdated,
-    ProductVariantOutOfStock,
-    ProductVariantBackInStock,
-    ProductVariantDeleted,
-    SaleCreated,
-    SaleUpdated,
-    SaleDeleted,
-    SaleToggle,
-    InvoiceRequested,
-    InvoiceDeleted,
-    InvoiceSent,
-    FulfillmentCreated,
-    FulfillmentCanceled,
-    CustomerCreated,
-    CustomerUpdated,
-    CollectionCreated,
-    CollectionUpdated,
-    CollectionDeleted,
-    CheckoutCreated,
-    CheckoutUpdated,
-    PageCreated,
-    PageUpdated,
-    PageDeleted,
-    PageTypeCreated,
-    PageTypeUpdated,
-    PageTypeDeleted,
-    PermissionGroupCreated,
-    PermissionGroupUpdated,
-    PermissionGroupDeleted,
-    ShippingPriceCreated,
-    ShippingPriceUpdated,
-    ShippingPriceDeleted,
-    ShippingZoneCreated,
-    ShippingZoneUpdated,
-    ShippingZoneDeleted,
-    StaffCreated,
-    StaffUpdated,
-    StaffDeleted,
-    TransactionActionRequest,
-    TranslationCreated,
-    TranslationUpdated,
-    VoucherCreated,
-    VoucherUpdated,
-    VoucherDeleted,
-    WarehouseCreated,
-    WarehouseUpdated,
-    WarehouseDeleted,
-    PaymentAuthorize,
-    PaymentCaptureEvent,
-    PaymentRefundEvent,
-    PaymentVoidEvent,
-    PaymentConfirmEvent,
-    PaymentProcessEvent,
-    PaymentListGateways,
-    OrderFilterShippingMethods,
-    CheckoutFilterShippingMethods,
-    ShippingListMethodsForCheckout,
-]
+WEBHOOK_TYPES_MAP = {
+    WebhookEventAsyncType.ADDRESS_CREATED: AddressCreated,
+    WebhookEventAsyncType.ADDRESS_UPDATED: AddressUpdated,
+    WebhookEventAsyncType.ADDRESS_DELETED: AddressDeleted,
+    WebhookEventAsyncType.APP_INSTALLED: AppInstalled,
+    WebhookEventAsyncType.APP_UPDATED: AppUpdated,
+    WebhookEventAsyncType.APP_DELETED: AppDeleted,
+    WebhookEventAsyncType.APP_STATUS_CHANGED: AppStatusChanged,
+    WebhookEventAsyncType.ATTRIBUTE_CREATED: AttributeCreated,
+    WebhookEventAsyncType.ATTRIBUTE_UPDATED: AttributeUpdated,
+    WebhookEventAsyncType.ATTRIBUTE_DELETED: AttributeDeleted,
+    WebhookEventAsyncType.ATTRIBUTE_VALUE_CREATED: AttributeValueCreated,
+    WebhookEventAsyncType.ATTRIBUTE_VALUE_UPDATED: AttributeValueUpdated,
+    WebhookEventAsyncType.ATTRIBUTE_VALUE_DELETED: AttributeValueDeleted,
+    WebhookEventAsyncType.CATEGORY_CREATED: CategoryCreated,
+    WebhookEventAsyncType.CATEGORY_UPDATED: CategoryUpdated,
+    WebhookEventAsyncType.CATEGORY_DELETED: CategoryDeleted,
+    WebhookEventAsyncType.CHANNEL_CREATED: ChannelCreated,
+    WebhookEventAsyncType.CHANNEL_UPDATED: ChannelUpdated,
+    WebhookEventAsyncType.CHANNEL_DELETED: ChannelDeleted,
+    WebhookEventAsyncType.CHANNEL_STATUS_CHANGED: ChannelStatusChanged,
+    WebhookEventAsyncType.GIFT_CARD_CREATED: GiftCardCreated,
+    WebhookEventAsyncType.GIFT_CARD_UPDATED: GiftCardUpdated,
+    WebhookEventAsyncType.GIFT_CARD_DELETED: GiftCardDeleted,
+    WebhookEventAsyncType.GIFT_CARD_STATUS_CHANGED: GiftCardStatusChanged,
+    WebhookEventAsyncType.GIFT_CARD_METADATA_UPDATED: GiftCardMetadataUpdated,
+    WebhookEventAsyncType.MENU_CREATED: MenuCreated,
+    WebhookEventAsyncType.MENU_UPDATED: MenuUpdated,
+    WebhookEventAsyncType.MENU_DELETED: MenuDeleted,
+    WebhookEventAsyncType.MENU_ITEM_CREATED: MenuItemCreated,
+    WebhookEventAsyncType.MENU_ITEM_UPDATED: MenuItemUpdated,
+    WebhookEventAsyncType.MENU_ITEM_DELETED: MenuItemDeleted,
+    WebhookEventAsyncType.ORDER_CREATED: OrderCreated,
+    WebhookEventAsyncType.ORDER_UPDATED: OrderUpdated,
+    WebhookEventAsyncType.ORDER_CONFIRMED: OrderConfirmed,
+    WebhookEventAsyncType.ORDER_FULLY_PAID: OrderFullyPaid,
+    WebhookEventAsyncType.ORDER_FULFILLED: OrderFulfilled,
+    WebhookEventAsyncType.ORDER_CANCELLED: OrderCancelled,
+    WebhookEventAsyncType.ORDER_METADATA_UPDATED: OrderMetadataUpdated,
+    WebhookEventAsyncType.DRAFT_ORDER_CREATED: DraftOrderCreated,
+    WebhookEventAsyncType.DRAFT_ORDER_UPDATED: DraftOrderUpdated,
+    WebhookEventAsyncType.DRAFT_ORDER_DELETED: DraftOrderDeleted,
+    WebhookEventAsyncType.PRODUCT_CREATED: ProductCreated,
+    WebhookEventAsyncType.PRODUCT_UPDATED: ProductUpdated,
+    WebhookEventAsyncType.PRODUCT_DELETED: ProductDeleted,
+    WebhookEventAsyncType.PRODUCT_METADATA_UPDATED: ProductMetadataUpdated,
+    WebhookEventAsyncType.PRODUCT_VARIANT_CREATED: ProductVariantCreated,
+    WebhookEventAsyncType.PRODUCT_VARIANT_UPDATED: ProductVariantUpdated,
+    WebhookEventAsyncType.PRODUCT_VARIANT_OUT_OF_STOCK: ProductVariantOutOfStock,
+    WebhookEventAsyncType.PRODUCT_VARIANT_BACK_IN_STOCK: ProductVariantBackInStock,
+    WebhookEventAsyncType.PRODUCT_VARIANT_DELETED: ProductVariantDeleted,
+    WebhookEventAsyncType.PRODUCT_VARIANT_METADATA_UPDATED: (
+        ProductVariantMetadataUpdated
+    ),
+    WebhookEventAsyncType.SALE_CREATED: SaleCreated,
+    WebhookEventAsyncType.SALE_UPDATED: SaleUpdated,
+    WebhookEventAsyncType.SALE_DELETED: SaleDeleted,
+    WebhookEventAsyncType.SALE_TOGGLE: SaleToggle,
+    WebhookEventAsyncType.INVOICE_REQUESTED: InvoiceRequested,
+    WebhookEventAsyncType.INVOICE_DELETED: InvoiceDeleted,
+    WebhookEventAsyncType.INVOICE_SENT: InvoiceSent,
+    WebhookEventAsyncType.FULFILLMENT_CREATED: FulfillmentCreated,
+    WebhookEventAsyncType.FULFILLMENT_CANCELED: FulfillmentCanceled,
+    WebhookEventAsyncType.FULFILLMENT_APPROVED: FulfillmentApproved,
+    WebhookEventAsyncType.FULFILLMENT_METADATA_UPDATED: FulfillmentMetadataUpdated,
+    WebhookEventAsyncType.CUSTOMER_CREATED: CustomerCreated,
+    WebhookEventAsyncType.CUSTOMER_UPDATED: CustomerUpdated,
+    WebhookEventAsyncType.CUSTOMER_METADATA_UPDATED: CustomerMetadataUpdated,
+    WebhookEventAsyncType.COLLECTION_CREATED: CollectionCreated,
+    WebhookEventAsyncType.COLLECTION_UPDATED: CollectionUpdated,
+    WebhookEventAsyncType.COLLECTION_DELETED: CollectionDeleted,
+    WebhookEventAsyncType.COLLECTION_METADATA_UPDATED: CollectionMetadataUpdated,
+    WebhookEventAsyncType.CHECKOUT_CREATED: CheckoutCreated,
+    WebhookEventAsyncType.CHECKOUT_UPDATED: CheckoutUpdated,
+    WebhookEventAsyncType.CHECKOUT_METADATA_UPDATED: CheckoutMetadataUpdated,
+    WebhookEventAsyncType.PAGE_CREATED: PageCreated,
+    WebhookEventAsyncType.PAGE_UPDATED: PageUpdated,
+    WebhookEventAsyncType.PAGE_DELETED: PageDeleted,
+    WebhookEventAsyncType.PAGE_TYPE_CREATED: PageTypeCreated,
+    WebhookEventAsyncType.PAGE_TYPE_UPDATED: PageTypeUpdated,
+    WebhookEventAsyncType.PAGE_TYPE_DELETED: PageTypeDeleted,
+    WebhookEventAsyncType.PERMISSION_GROUP_CREATED: PermissionGroupCreated,
+    WebhookEventAsyncType.PERMISSION_GROUP_UPDATED: PermissionGroupUpdated,
+    WebhookEventAsyncType.PERMISSION_GROUP_DELETED: PermissionGroupDeleted,
+    WebhookEventAsyncType.SHIPPING_PRICE_CREATED: ShippingPriceCreated,
+    WebhookEventAsyncType.SHIPPING_PRICE_UPDATED: ShippingPriceUpdated,
+    WebhookEventAsyncType.SHIPPING_PRICE_DELETED: ShippingPriceDeleted,
+    WebhookEventAsyncType.SHIPPING_ZONE_CREATED: ShippingZoneCreated,
+    WebhookEventAsyncType.SHIPPING_ZONE_UPDATED: ShippingZoneUpdated,
+    WebhookEventAsyncType.SHIPPING_ZONE_DELETED: ShippingZoneDeleted,
+    WebhookEventAsyncType.SHIPPING_ZONE_METADATA_UPDATED: ShippingZoneMetadataUpdated,
+    WebhookEventAsyncType.STAFF_CREATED: StaffCreated,
+    WebhookEventAsyncType.STAFF_UPDATED: StaffUpdated,
+    WebhookEventAsyncType.STAFF_DELETED: StaffDeleted,
+    WebhookEventAsyncType.TRANSACTION_ACTION_REQUEST: TransactionActionRequest,
+    WebhookEventAsyncType.TRANSACTION_ITEM_METADATA_UPDATED: (
+        TransactionItemMetadataUpdated
+    ),
+    WebhookEventAsyncType.TRANSLATION_CREATED: TranslationCreated,
+    WebhookEventAsyncType.TRANSLATION_UPDATED: TranslationUpdated,
+    WebhookEventAsyncType.VOUCHER_CREATED: VoucherCreated,
+    WebhookEventAsyncType.VOUCHER_UPDATED: VoucherUpdated,
+    WebhookEventAsyncType.VOUCHER_DELETED: VoucherDeleted,
+    WebhookEventAsyncType.VOUCHER_METADATA_UPDATED: VoucherMetadataUpdated,
+    WebhookEventAsyncType.WAREHOUSE_CREATED: WarehouseCreated,
+    WebhookEventAsyncType.WAREHOUSE_UPDATED: WarehouseUpdated,
+    WebhookEventAsyncType.WAREHOUSE_DELETED: WarehouseDeleted,
+    WebhookEventAsyncType.WAREHOUSE_METADATA_UPDATED: WarehouseMetadataUpdated,
+    WebhookEventSyncType.PAYMENT_AUTHORIZE: PaymentAuthorize,
+    WebhookEventSyncType.PAYMENT_CAPTURE: PaymentCaptureEvent,
+    WebhookEventSyncType.PAYMENT_REFUND: PaymentRefundEvent,
+    WebhookEventSyncType.PAYMENT_VOID: PaymentVoidEvent,
+    WebhookEventSyncType.PAYMENT_CONFIRM: PaymentConfirmEvent,
+    WebhookEventSyncType.PAYMENT_PROCESS: PaymentProcessEvent,
+    WebhookEventSyncType.PAYMENT_LIST_GATEWAYS: PaymentListGateways,
+    WebhookEventSyncType.ORDER_FILTER_SHIPPING_METHODS: (OrderFilterShippingMethods),
+    WebhookEventSyncType.CHECKOUT_FILTER_SHIPPING_METHODS: (
+        CheckoutFilterShippingMethods
+    ),
+    WebhookEventSyncType.SHIPPING_LIST_METHODS_FOR_CHECKOUT: (
+        ShippingListMethodsForCheckout
+    ),
+    WebhookEventSyncType.CHECKOUT_CALCULATE_TAXES: CalculateTaxes,
+    WebhookEventSyncType.ORDER_CALCULATE_TAXES: CalculateTaxes,
+}

@@ -11,8 +11,8 @@ from ....account.notifications import (
     send_set_password_notification,
 )
 from ....account.search import prepare_user_search_document_value
+from ....account.utils import retrieve_user_by_email
 from ....checkout import AddressType
-from ....core.db.utils import set_mutation_flag_in_context
 from ....core.exceptions import PermissionDenied
 from ....core.permissions import AccountPermissions, AuthorizationFilters
 from ....core.tracing import traced_atomic_transaction
@@ -22,7 +22,9 @@ from ....graphql.utils import get_user_or_app_from_context
 from ....order.utils import match_orders_with_new_user
 from ...account.i18n import I18nMixin
 from ...account.types import Address, AddressInput, User
+from ...app.dataloaders import get_app_promise
 from ...channel.utils import clean_channel, validate_channel
+from ...core.context import set_mutation_flag_in_context
 from ...core.enums import LanguageCodeEnum
 from ...core.mutations import (
     BaseMutation,
@@ -31,6 +33,7 @@ from ...core.mutations import (
     validation_error_to_error_type,
 )
 from ...core.types import AccountError
+from ...plugins.dataloaders import get_plugin_manager_promise
 from .authentication import CreateToken
 
 BILLING_ADDRESS_FIELD = "default_billing_address"
@@ -47,9 +50,10 @@ def check_can_edit_address(context, address):
     - customers associated to the given address.
     """
     requester = get_user_or_app_from_context(context)
-    if requester.has_perm(AccountPermissions.MANAGE_USERS):
+    if requester and requester.has_perm(AccountPermissions.MANAGE_USERS):
         return True
-    if not context.app and not context.user.is_anonymous:
+    app = get_app_promise(context).get()
+    if not app and context.user:
         is_owner = requester.addresses.filter(pk=address.pk).exists()
         if is_owner:
             return True
@@ -77,7 +81,8 @@ class SetPassword(CreateToken):
     @classmethod
     def mutate(cls, root, info, **data):
         set_mutation_flag_in_context(info.context)
-        result = info.context.plugins.perform_mutation(
+        manager = get_plugin_manager_promise(info.context).get()
+        result = manager.perform_mutation(
             mutation_cls=cls, root=root, info=info, data=data
         )
         if result is not None:
@@ -154,9 +159,8 @@ class RequestPasswordReset(BaseMutation):
                 {"redirect_url": error}, code=AccountErrorCode.INVALID
             )
 
-        try:
-            user = models.User.objects.get(email=email)
-        except ObjectDoesNotExist:
+        user = retrieve_user_by_email(email)
+        if not user:
             raise ValidationError(
                 {
                     "email": ValidationError(
@@ -191,11 +195,11 @@ class RequestPasswordReset(BaseMutation):
             channel_slug = validate_channel(
                 channel_slug, error_class=AccountErrorCode
             ).slug
-
+        manager = get_plugin_manager_promise(info.context).get()
         send_password_reset_notification(
             redirect_url,
             user,
-            info.context.plugins,
+            manager,
             channel_slug=channel_slug,
             staff=user.is_staff,
         )
@@ -328,10 +332,10 @@ class BaseAddressUpdate(ModelMutation, I18nMixin):
         user = address.user_addresses.first()
         user.search_document = prepare_user_search_document_value(user)
         user.save(update_fields=["search_document", "updated_at"])
-
-        info.context.plugins.customer_updated(user)
-        address = info.context.plugins.change_user_address(address, None, user)
-        info.context.plugins.address_updated(address)
+        manager = get_plugin_manager_promise(info.context).get()
+        cls.call_event(manager.customer_updated, user)
+        address = manager.change_user_address(address, None, user)
+        cls.call_event(manager.address_updated, address)
 
         success_response = cls.success_response(address)
         success_response.user = user
@@ -365,7 +369,7 @@ class BaseAddressDelete(ModelDeleteMutation):
             raise PermissionDenied()
 
         node_id = data.get("id")
-        instance = cls.get_node_or_error(info, node_id, Address)
+        instance = cls.get_node_or_error(info, node_id, only_type=Address)
         if instance:
             cls.clean_instance(info, instance)
 
@@ -391,8 +395,9 @@ class BaseAddressDelete(ModelDeleteMutation):
         response = cls.success_response(instance)
 
         response.user = user
-        info.context.plugins.customer_updated(user)
-        info.context.plugins.address_deleted(instance)
+        manager = get_plugin_manager_promise(info.context).get()
+        cls.call_event(manager.customer_updated, user)
+        cls.call_event(manager.address_deleted, instance)
         return response
 
 
@@ -477,21 +482,26 @@ class BaseCustomerCreate(ModelMutation, I18nMixin):
                     {"redirect_url": error}, code=AccountErrorCode.INVALID
                 )
 
+        email = cleaned_input.get("email")
+        if email:
+            cleaned_input["email"] = email.lower()
+
         return cleaned_input
 
     @classmethod
     @traced_atomic_transaction()
     def save(cls, info, instance, cleaned_input):
         default_shipping_address = cleaned_input.get(SHIPPING_ADDRESS_FIELD)
+        manager = get_plugin_manager_promise(info.context).get()
         if default_shipping_address:
-            default_shipping_address = info.context.plugins.change_user_address(
+            default_shipping_address = manager.change_user_address(
                 default_shipping_address, "shipping", instance
             )
             default_shipping_address.save()
             instance.default_shipping_address = default_shipping_address
         default_billing_address = cleaned_input.get(BILLING_ADDRESS_FIELD)
         if default_billing_address:
-            default_billing_address = info.context.plugins.change_user_address(
+            default_billing_address = manager.change_user_address(
                 default_billing_address, "billing", instance
             )
             default_billing_address.save()
@@ -509,10 +519,10 @@ class BaseCustomerCreate(ModelMutation, I18nMixin):
 
         # The instance is a new object in db, create an event
         if is_creation:
-            info.context.plugins.customer_created(customer=instance)
+            manager.customer_created(customer=instance)
             account_events.customer_account_created_event(user=instance)
         else:
-            info.context.plugins.customer_updated(instance)
+            manager.customer_updated(instance)
 
         if cleaned_input.get("redirect_url"):
             channel_slug = cleaned_input.get("channel")
@@ -527,6 +537,6 @@ class BaseCustomerCreate(ModelMutation, I18nMixin):
             send_set_password_notification(
                 cleaned_input.get("redirect_url"),
                 instance,
-                info.context.plugins,
+                manager,
                 channel_slug,
             )

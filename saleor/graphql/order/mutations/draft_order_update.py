@@ -4,7 +4,9 @@ from django.core.exceptions import ValidationError
 from ....core.permissions import OrderPermissions
 from ....order import OrderStatus, models
 from ....order.error_codes import OrderErrorCode
+from ...app.dataloaders import get_app_promise
 from ...core.types import OrderError
+from ...plugins.dataloaders import get_plugin_manager_promise
 from ..types import Order
 from .draft_order_create import DraftOrderCreate, DraftOrderInput
 
@@ -54,6 +56,13 @@ class DraftOrderUpdate(DraftOrderCreate):
 
     @classmethod
     def save(cls, info, instance, cleaned_input):
+        manager = get_plugin_manager_promise(info.context).get()
+        app = get_app_promise(info.context).get()
         return cls._save_draft_order(
-            info, instance, cleaned_input, is_new_instance=False
+            info,
+            instance,
+            cleaned_input,
+            is_new_instance=False,
+            app=app,
+            manager=manager,
         )

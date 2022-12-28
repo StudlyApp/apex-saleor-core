@@ -1,7 +1,6 @@
 import logging
 from typing import List, Optional
 
-from django.contrib.auth.models import AnonymousUser
 from django.core.exceptions import ValidationError
 from django.core.handlers.wsgi import WSGIRequest
 from django.db.models import Prefetch
@@ -54,8 +53,15 @@ def handle_webhook(
 ):
     payload = request.body
     sig_header = request.META["HTTP_STRIPE_SIGNATURE"]
-    endpoint_secret = gateway_config.connection_params["webhook_secret"]
     api_key = gateway_config.connection_params["secret_api_key"]
+    endpoint_secret = gateway_config.connection_params.get("webhook_secret")
+
+    if not endpoint_secret:
+        logger.warning("Missing webhook secret on Saleor side.")
+        response = HttpResponse(status=500)
+        response.content = "Missing webhook secret on Saleor side."
+        return response
+
     try:
         event = construct_stripe_event(
             api_key=api_key,
@@ -202,7 +208,7 @@ def _finalize_checkout(
             payment_data={},
             store_source=False,
             discounts=discounts,
-            user=checkout.user or AnonymousUser(),  # type: ignore
+            user=checkout.user or None,  # type: ignore
             app=None,
         )
     except ValidationError as e:

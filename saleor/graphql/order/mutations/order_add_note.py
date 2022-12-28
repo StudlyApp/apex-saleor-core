@@ -1,14 +1,15 @@
 import graphene
 from django.core.exceptions import ValidationError
-from django.db import transaction
 
 from ....core.permissions import OrderPermissions
 from ....core.tracing import traced_atomic_transaction
 from ....order import events
 from ....order.error_codes import OrderErrorCode
+from ...app.dataloaders import get_app_promise
 from ...core.mutations import BaseMutation
 from ...core.types import OrderError
-from ...core.utils import validate_required_string_field
+from ...core.validators import validate_required_string_field
+from ...plugins.dataloaders import get_plugin_manager_promise
 from ..types import Order, OrderEvent
 from .utils import get_webhook_handler_by_order_status
 
@@ -55,16 +56,18 @@ class OrderAddNote(BaseMutation):
         return cleaned_input
 
     @classmethod
-    @traced_atomic_transaction()
     def perform_mutation(cls, _root, info, **data):
         order = cls.get_node_or_error(info, data.get("id"), only_type=Order)
         cleaned_input = cls.clean_input(info, order, data)
-        event = events.order_note_added_event(
-            order=order,
-            user=info.context.user,
-            app=info.context.app,
-            message=cleaned_input["message"],
-        )
-        func = get_webhook_handler_by_order_status(order.status, info)
-        transaction.on_commit(lambda: func(order))
+        app = get_app_promise(info.context).get()
+        manager = get_plugin_manager_promise(info.context).get()
+        with traced_atomic_transaction():
+            event = events.order_note_added_event(
+                order=order,
+                user=info.context.user,
+                app=app,
+                message=cleaned_input["message"],
+            )
+            func = get_webhook_handler_by_order_status(order.status, manager)
+            cls.call_event(func, order)
         return OrderAddNote(order=order, event=event)

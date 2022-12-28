@@ -1,4 +1,5 @@
 import uuid
+from functools import partial
 from typing import List
 
 import graphene
@@ -19,12 +20,12 @@ from ...core.tracing import traced_resolver
 from ...order import OrderStatus
 from ...thumbnail.utils import get_image_or_proxy_url, get_thumbnail_size
 from ..account.utils import check_is_owner_or_has_one_of_perms
-from ..app.dataloaders import AppByIdLoader
+from ..app.dataloaders import AppByIdLoader, get_app_promise
 from ..app.types import App
 from ..checkout.dataloaders import CheckoutByUserAndChannelLoader, CheckoutByUserLoader
-from ..checkout.types import Checkout
+from ..checkout.types import Checkout, CheckoutCountableConnection
 from ..core.connection import CountableConnection, create_connection_slice
-from ..core.descriptions import DEPRECATED_IN_3X_FIELD
+from ..core.descriptions import ADDED_IN_38, DEPRECATED_IN_3X_FIELD
 from ..core.enums import LanguageCodeEnum
 from ..core.federation import federated_entity, resolve_federation_references
 from ..core.fields import ConnectionField, PermissionsField
@@ -41,6 +42,7 @@ from ..core.utils import from_global_id_or_error, str_to_enum, to_global_id_or_n
 from ..giftcard.dataloaders import GiftCardsByUserLoader
 from ..meta.types import ObjectWithMetadata
 from ..order.dataloaders import OrderLineByIdLoader, OrdersByUserLoader
+from ..plugins.dataloaders import get_plugin_manager_promise
 from ..utils import format_permissions_for_display, get_user_or_app_from_context
 from .dataloaders import (
     CustomerEventsByUserLoader,
@@ -138,15 +140,18 @@ class Address(ModelObjectType):
     def __resolve_references(roots: List["Address"], info):
         from .resolvers import resolve_addresses
 
+        app = get_app_promise(info.context).get()
+
         root_ids = [root.id for root in roots]
         addresses = {
-            address.id: address for address in resolve_addresses(info, root_ids)
+            address.id: address for address in resolve_addresses(info, root_ids, app)
         }
 
         result = []
         for root_id in root_ids:
             _, root_id = from_global_id_or_error(root_id, Address)
             result.append(addresses.get(int(root_id)))
+
         return result
 
 
@@ -245,7 +250,9 @@ class User(ModelObjectType):
     last_name = graphene.String(required=True)
     is_staff = graphene.Boolean(required=True)
     is_active = graphene.Boolean(required=True)
-    addresses = NonNullList(Address, description="List of all user's addresses.")
+    addresses = NonNullList(
+        Address, description="List of all user's addresses.", required=True
+    )
     checkout = graphene.Field(
         Checkout,
         description="Returns the last open checkout of this user.",
@@ -265,6 +272,13 @@ class User(ModelObjectType):
     checkout_ids = NonNullList(
         graphene.ID,
         description="Returns the checkout ID's assigned to this user.",
+        channel=graphene.String(
+            description="Slug of a channel for which the data should be returned."
+        ),
+    )
+    checkouts = ConnectionField(
+        CheckoutCountableConnection,
+        description="Returns checkouts assigned to this user." + ADDED_IN_38,
         channel=graphene.String(
             description="Slug of a channel for which the data should be returned."
         ),
@@ -380,6 +394,21 @@ class User(ModelObjectType):
         )
 
     @staticmethod
+    def resolve_checkouts(root: models.User, info, **kwargs):
+        def _resolve_checkouts(checkouts):
+            return create_connection_slice(
+                checkouts, info, kwargs, CheckoutCountableConnection
+            )
+
+        if channel := kwargs.get("channel"):
+            return (
+                CheckoutByUserAndChannelLoader(info.context)
+                .load((root.id, channel))
+                .then(_resolve_checkouts)
+            )
+        return CheckoutByUserLoader(info.context).load(root.id).then(_resolve_checkouts)
+
+    @staticmethod
     def resolve_gift_cards(root: models.User, info, **kwargs):
         from ..giftcard.types import GiftCardCountableConnection
 
@@ -452,7 +481,7 @@ class User(ModelObjectType):
         size = get_thumbnail_size(size)
 
         def _resolve_avatar(thumbnail):
-            url = get_image_or_proxy_url(thumbnail, root.id, "User", size, format)
+            url = get_image_or_proxy_url(thumbnail, root.uuid, "User", size, format)
             return Image(url=url, alt=None)
 
         return (
@@ -466,7 +495,10 @@ class User(ModelObjectType):
         from .resolvers import resolve_payment_sources
 
         if root == info.context.user:
-            return resolve_payment_sources(info, root, channel_slug=channel)
+            return get_plugin_manager_promise(info.context).then(
+                partial(resolve_payment_sources, info, root, channel_slug=channel)
+            )
+
         raise PermissionDenied(permissions=[AuthorizationFilters.OWNER])
 
     @staticmethod
@@ -619,7 +651,7 @@ class Group(ModelObjectType):
         from .resolvers import resolve_permission_groups
 
         requestor = get_user_or_app_from_context(info.context)
-        if not requestor.has_perm(AccountPermissions.MANAGE_STAFF):
+        if not requestor or not requestor.has_perm(AccountPermissions.MANAGE_STAFF):
             qs = auth_models.Group.objects.none()
         else:
             qs = resolve_permission_groups(info)

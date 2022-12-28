@@ -11,17 +11,18 @@ from graphene.utils.str_converters import to_camel_case
 
 from ...account import events as account_events
 from ...account.error_codes import AccountErrorCode
+from ...account.models import User
 from ...core.exceptions import PermissionDenied
 from ...core.permissions import (
     AccountPermissions,
     AuthorizationFilters,
     has_one_of_permissions,
 )
+from ..app.dataloaders import get_app_promise
 
 if TYPE_CHECKING:
     from django.db.models import QuerySet
 
-    from ...account.models import User
     from ...app.models import App
 
 
@@ -71,9 +72,10 @@ class CustomerDeleteMixin(UserDeleteMixin):
 
     @classmethod
     def post_process(cls, info, deleted_count=1):
+        app = get_app_promise(info.context).get()
         account_events.customer_deleted_event(
             staff_user=info.context.user,
-            app=info.context.app,
+            app=app,
             deleted_count=deleted_count,
         )
 
@@ -84,7 +86,7 @@ class StaffDeleteMixin(UserDeleteMixin):
 
     @classmethod
     def check_permissions(cls, context, permissions=None):
-        if context.app:
+        if get_app_promise(context).get():
             raise PermissionDenied(
                 message="Apps are not allowed to perform this mutation."
             )
@@ -198,12 +200,12 @@ def get_user_permissions(user: "User") -> "QuerySet":
 
 
 def get_out_of_scope_permissions(
-    requestor: Union["User", "App"], permissions: List[str]
+    requestor: Union["User", "App", None], permissions: List[str]
 ) -> List[str]:
     """Return permissions that the requestor hasn't got."""
     missing_permissions = []
     for perm in permissions:
-        if not requestor.has_perm(perm):
+        if not requestor or not requestor.has_perm(perm):
             missing_permissions.append(perm)
     return missing_permissions
 
@@ -227,7 +229,7 @@ def can_user_manage_group(user: "User", group: Group) -> bool:
 def can_manage_app(requestor: Union["User", "App"], app: "App") -> bool:
     """Requestor can't manage app with wider scope of permissions."""
     permissions = app.get_permissions()
-    return requestor.has_perms(permissions)
+    return bool(requestor) and requestor.has_perms(permissions)
 
 
 def get_group_permission_codes(group: Group) -> "QuerySet":
@@ -237,7 +239,7 @@ def get_group_permission_codes(group: Group) -> "QuerySet":
     ).values_list("formated_codename", flat=True)
 
 
-def get_groups_which_user_can_manage(user: "User") -> List[Optional[Group]]:
+def get_groups_which_user_can_manage(user: "User") -> List[Group]:
     """Return groups which user can manage."""
     if not user.is_staff:
         return []
@@ -247,7 +249,7 @@ def get_groups_which_user_can_manage(user: "User") -> List[Optional[Group]]:
 
     groups = Group.objects.all().annotate(group_perms=ArrayAgg("permissions"))
 
-    editable_groups = []
+    editable_groups: List[Group] = []
     for group in groups.iterator():
         out_of_scope_permissions = set(group.group_perms) - user_permission_pks
         out_of_scope_permissions.discard(None)

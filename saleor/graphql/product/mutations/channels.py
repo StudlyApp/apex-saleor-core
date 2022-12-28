@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING, DefaultDict, Dict, List
 import graphene
 import pytz
 from django.core.exceptions import ValidationError
-from django.db import transaction
 from django.db.utils import IntegrityError
 
 from ....checkout.models import CheckoutLine
@@ -25,20 +24,26 @@ from ...channel.types import Channel
 from ...core.descriptions import (
     ADDED_IN_31,
     ADDED_IN_33,
+    ADDED_IN_38,
     DEPRECATED_IN_3X_INPUT,
     PREVIEW_FEATURE,
 )
 from ...core.mutations import BaseMutation
-from ...core.scalars import PositiveDecimal
+from ...core.scalars import Date, PositiveDecimal
 from ...core.types import (
     CollectionChannelListingError,
     NonNullList,
     ProductChannelListingError,
 )
 from ...core.utils import get_duplicated_values
-from ...core.validators import validate_price_precision
+from ...core.validators import (
+    validate_one_of_args_is_in_mutation,
+    validate_price_precision,
+)
+from ...plugins.dataloaders import get_plugin_manager_promise
 from ...utils.validators import check_for_duplicates
-from ..types.products import Collection, Product, ProductVariant
+from ..types.collections import Collection
+from ..types.products import Product, ProductVariant
 
 if TYPE_CHECKING:
     from ....channel.models import Channel as ChannelModel
@@ -52,7 +57,7 @@ class PublishableChannelListingInput(graphene.InputObjectType):
     is_published = graphene.Boolean(
         description="Determines if object is visible to customers."
     )
-    publication_date = graphene.types.datetime.Date(
+    publication_date = Date(
         description=(
             f"Publication date. ISO 8601 standard. {DEPRECATED_IN_3X_INPUT} "
             "Use `publishedAt` field instead."
@@ -73,7 +78,7 @@ class ProductChannelListingAddInput(PublishableChannelListingInput):
     is_available_for_purchase = graphene.Boolean(
         description="Determine if product should be available for purchase.",
     )
-    available_for_purchase_date = graphene.Date(
+    available_for_purchase_date = Date(
         description=(
             "A start date from which a product will be available for purchase. "
             "When not set and isAvailable is set to True, "
@@ -328,16 +333,17 @@ class ProductChannelListingUpdate(BaseChannelListingMutation):
         cls.perform_checkout_lines_delete(variant_ids, remove_channels)
 
     @classmethod
-    @traced_atomic_transaction()
     def save(cls, info, product: "ProductModel", cleaned_input: Dict):
-        cls.update_channels(product, cleaned_input.get("update_channels", []))
-        cls.remove_channels(product, cleaned_input.get("remove_channels", []))
-        transaction.on_commit(lambda: info.context.plugins.product_updated(product))
+        with traced_atomic_transaction():
+            cls.update_channels(product, cleaned_input.get("update_channels", []))
+            cls.remove_channels(product, cleaned_input.get("remove_channels", []))
+            product = ProductModel.objects.prefetched_for_webhook().get(pk=product.pk)
+            manager = get_plugin_manager_promise(info.context).get()
+            cls.call_event(manager.product_updated, product)
 
     @classmethod
     def perform_mutation(cls, _root, info, id, input):
-        qs = ProductModel.objects.prefetched_for_webhook()
-        product = cls.get_node_or_error(info, id, only_type=Product, field="id", qs=qs)
+        product = cls.get_node_or_error(info, id, only_type=Product, field="id")
         errors = defaultdict(list)
 
         cleaned_input = cls.clean_channels(
@@ -385,7 +391,11 @@ class ProductVariantChannelListingUpdate(BaseMutation):
 
     class Arguments:
         id = graphene.ID(
-            required=True, description="ID of a product variant to update."
+            required=False, description="ID of a product variant to update."
+        )
+        sku = graphene.String(
+            required=False,
+            description="SKU of a product variant to update." + ADDED_IN_38,
         )
         input = NonNullList(
             ProductVariantChannelListingAddInput,
@@ -485,38 +495,50 @@ class ProductVariantChannelListingUpdate(BaseMutation):
         return cleaned_input
 
     @classmethod
-    @traced_atomic_transaction()
     def save(cls, info, variant: "ProductVariantModel", cleaned_input: List):
-        for channel_listing_data in cleaned_input:
-            channel = channel_listing_data["channel"]
-            defaults = {"currency": channel.currency_code}
-            if "price" in channel_listing_data.keys():
-                defaults["price_amount"] = channel_listing_data.get("price", None)
-            if "cost_price" in channel_listing_data.keys():
-                defaults["cost_price_amount"] = channel_listing_data.get(
-                    "cost_price", None
+        with traced_atomic_transaction():
+            for channel_listing_data in cleaned_input:
+                channel = channel_listing_data["channel"]
+                defaults = {"currency": channel.currency_code}
+                if "price" in channel_listing_data.keys():
+                    defaults["price_amount"] = channel_listing_data.get("price", None)
+                if "cost_price" in channel_listing_data.keys():
+                    defaults["cost_price_amount"] = channel_listing_data.get(
+                        "cost_price", None
+                    )
+                if "preorder_threshold" in channel_listing_data.keys():
+                    defaults["preorder_quantity_threshold"] = channel_listing_data.get(
+                        "preorder_threshold", None
+                    )
+                ProductVariantChannelListing.objects.update_or_create(
+                    variant=variant,
+                    channel=channel,
+                    defaults=defaults,
                 )
-            if "preorder_threshold" in channel_listing_data.keys():
-                defaults["preorder_quantity_threshold"] = channel_listing_data.get(
-                    "preorder_threshold", None
-                )
-            ProductVariantChannelListing.objects.update_or_create(
-                variant=variant,
-                channel=channel,
-                defaults=defaults,
-            )
-        update_product_discounted_price_task.delay(variant.product_id)
-
-        transaction.on_commit(
-            lambda: info.context.plugins.product_variant_updated(variant)
-        )
+            update_product_discounted_price_task.delay(variant.product_id)
+            manager = get_plugin_manager_promise(info.context).get()
+            cls.call_event(manager.product_variant_updated, variant)
 
     @classmethod
-    def perform_mutation(cls, _root, info, id, input):
+    def perform_mutation(cls, _root, info, input, id=None, sku=None):
+        validate_one_of_args_is_in_mutation(ProductErrorCode, "sku", sku, "id", id)
+
         qs = ProductVariantModel.objects.prefetched_for_webhook()
-        variant: "ProductVariantModel" = cls.get_node_or_error(  # type: ignore
-            info, id, only_type=ProductVariant, field="id", qs=qs
-        )
+        if id:
+            variant: "ProductVariantModel" = cls.get_node_or_error(  # type: ignore
+                info, id, only_type=ProductVariant, field="id", qs=qs
+            )
+        else:
+            variant = qs.filter(sku=sku).first()
+            if not variant:
+                raise ValidationError(
+                    {
+                        "sku": ValidationError(
+                            f"Couldn't resolve to a node: {sku}", code="not_found"
+                        )
+                    }
+                )
+
         errors = defaultdict(list)
 
         cleaned_input = cls.clean_channels(info, input, errors)
@@ -584,10 +606,10 @@ class CollectionChannelListingUpdate(BaseChannelListingMutation):
         ).delete()
 
     @classmethod
-    @traced_atomic_transaction()
     def save(cls, info, collection: "CollectionModel", cleaned_input: Dict):
-        cls.add_channels(collection, cleaned_input.get("add_channels", []))
-        cls.remove_channels(collection, cleaned_input.get("remove_channels", []))
+        with traced_atomic_transaction():
+            cls.add_channels(collection, cleaned_input.get("add_channels", []))
+            cls.remove_channels(collection, cleaned_input.get("remove_channels", []))
 
     @classmethod
     def perform_mutation(cls, _root, info, id, input):

@@ -26,6 +26,7 @@ from ..channel.dataloaders import ChannelByIdLoader
 from ..core.connection import CountableConnection
 from ..core.descriptions import ADDED_IN_31, DEPRECATED_IN_3X_FIELD, PREVIEW_FEATURE
 from ..core.fields import PermissionsField
+from ..core.scalars import Date
 from ..core.types import ModelObjectType, Money, NonNullList
 from ..meta.types import ObjectWithMetadata
 from ..order.dataloaders import OrderByIdLoader
@@ -104,10 +105,8 @@ class GiftCardEvent(ModelObjectType):
         description="The list of old gift card tags.",
     )
     balance = graphene.Field(GiftCardEventBalance, description="The gift card balance.")
-    expiry_date = graphene.types.datetime.Date(description="The gift card expiry date.")
-    old_expiry_date = graphene.types.datetime.Date(
-        description="Previous gift card expiry date."
-    )
+    expiry_date = Date(description="The gift card expiry date.")
+    old_expiry_date = Date(description="Previous gift card expiry date.")
 
     class Meta:
         description = "History log of the gift card." + ADDED_IN_31 + PREVIEW_FEATURE
@@ -276,7 +275,7 @@ class GiftCard(ModelObjectType):
         ),
     )
     last_used_on = graphene.DateTime()
-    expiry_date = graphene.Date()
+    expiry_date = Date()
     app = graphene.Field(
         App,
         description=(
@@ -363,11 +362,14 @@ class GiftCard(ModelObjectType):
             requestor = get_user_or_app_from_context(info.context)
             # Gift card code can be fetched by the staff user and app
             # with manage gift card permission and by the card owner.
-            if (
-                not root.used_by_email
-                and requestor.has_perm(GiftcardPermissions.MANAGE_GIFT_CARD)
-            ) or (user and requestor == user):
-                return root.code
+            if requestor:
+                requestor_is_an_owner = user and requestor == user
+                card_already_used = bool(root.used_by_email)
+                if requestor_is_an_owner or (
+                    not card_already_used
+                    and requestor.has_perm(GiftcardPermissions.MANAGE_GIFT_CARD)
+                ):
+                    return root.code
 
             return PermissionDenied(
                 permissions=[

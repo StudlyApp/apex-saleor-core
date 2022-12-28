@@ -4,6 +4,7 @@ from ...core.permissions import MenuPermissions
 from ...menu import models
 from ..core.mutations import ModelBulkDeleteMutation
 from ..core.types import MenuError, NonNullList
+from ..plugins.dataloaders import get_plugin_manager_promise
 from .types import Menu, MenuItem
 
 
@@ -25,8 +26,9 @@ class MenuBulkDelete(ModelBulkDeleteMutation):
     def bulk_action(cls, info, queryset):
         menus = list(queryset)
         queryset.delete()
+        manager = get_plugin_manager_promise(info.context).get()
         for menu in menus:
-            info.context.plugins.menu_deleted(menu)
+            manager.menu_deleted(menu)
 
 
 class MenuItemBulkDelete(ModelBulkDeleteMutation):
@@ -47,5 +49,6 @@ class MenuItemBulkDelete(ModelBulkDeleteMutation):
     def bulk_action(cls, info, queryset):
         menu_items = list(queryset)
         queryset.delete()
+        manager = get_plugin_manager_promise(info.context).get()
         for menu_item in menu_items:
-            info.context.plugins.menu_item_deleted(menu_item)
+            manager.menu_item_deleted(menu_item)

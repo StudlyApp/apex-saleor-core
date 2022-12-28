@@ -2,6 +2,7 @@ from enum import Enum
 from typing import Iterable, List
 
 from django.contrib.auth.models import Permission
+from django.db.models import QuerySet
 
 
 class BasePermissionEnum(Enum):
@@ -45,6 +46,7 @@ class CheckoutPermissions(BasePermissionEnum):
     MANAGE_CHECKOUTS = "checkout.manage_checkouts"
     HANDLE_CHECKOUTS = "checkout.handle_checkouts"
     HANDLE_TAXES = "checkout.handle_taxes"
+    MANAGE_TAXES = "checkout.manage_taxes"
 
 
 class OrderPermissions(BasePermissionEnum):
@@ -83,20 +85,20 @@ class SitePermissions(BasePermissionEnum):
 PERMISSIONS_ENUMS = [
     AccountPermissions,
     AppPermission,
+    CheckoutPermissions,
     ChannelPermissions,
     DiscountPermissions,
-    PluginsPermissions,
     GiftcardPermissions,
     MenuPermissions,
     OrderPermissions,
     PagePermissions,
     PageTypePermissions,
     PaymentPermissions,
+    PluginsPermissions,
     ProductPermissions,
     ProductTypePermissions,
     ShippingPermissions,
     SitePermissions,
-    CheckoutPermissions,
 ]
 
 
@@ -155,7 +157,7 @@ def get_permissions(permissions=None):
     return get_permissions_from_codenames(codenames)
 
 
-def get_permissions_from_codenames(permission_codenames: List[str]):
+def get_permissions_from_codenames(permission_codenames: List[str]) -> QuerySet:
     return (
         Permission.objects.filter(codename__in=permission_codenames)
         .prefetch_related("content_type")

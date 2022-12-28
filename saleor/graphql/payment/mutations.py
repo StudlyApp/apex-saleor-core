@@ -4,6 +4,7 @@ from typing import List, Optional, Union
 
 import graphene
 from django.core.exceptions import ValidationError
+from django.db import transaction
 from django.db.models import F
 
 from ...channel.models import Channel
@@ -34,6 +35,7 @@ from ...payment.gateway import (
 )
 from ...payment.utils import create_payment, is_currency_supported
 from ..account.i18n import I18nMixin
+from ..app.dataloaders import get_app_promise
 from ..channel.utils import validate_channel
 from ..checkout.mutations.utils import get_checkout
 from ..checkout.types import Checkout
@@ -47,7 +49,9 @@ from ..core.fields import JSONString
 from ..core.mutations import BaseMutation
 from ..core.scalars import UUID, PositiveDecimal
 from ..core.types import common as common_types
+from ..discount.dataloaders import load_discounts
 from ..meta.mutations import MetadataInput
+from ..plugins.dataloaders import get_plugin_manager_promise
 from ..utils import get_user_or_app_from_context
 from .enums import StorePaymentMethodEnum, TransactionActionEnum, TransactionStatusEnum
 from .types import Payment, PaymentInitialized, TransactionItem
@@ -243,7 +247,7 @@ class CheckoutPaymentCreate(BaseMutation, I18nMixin):
         data = data["input"]
         gateway = data["gateway"]
 
-        manager = info.context.plugins
+        manager = get_plugin_manager_promise(info.context).get()
         cls.validate_gateway(manager, gateway, checkout)
         cls.validate_return_url(data)
 
@@ -271,9 +275,8 @@ class CheckoutPaymentCreate(BaseMutation, I18nMixin):
                     )
                 }
             )
-        checkout_info = fetch_checkout_info(
-            checkout, lines, info.context.discounts, manager
-        )
+        discounts = load_discounts(info.context)
+        checkout_info = fetch_checkout_info(checkout, lines, discounts, manager)
 
         cls.validate_token(
             manager, gateway, data, channel_slug=checkout_info.channel.slug
@@ -287,7 +290,7 @@ class CheckoutPaymentCreate(BaseMutation, I18nMixin):
             checkout_info=checkout_info,
             lines=lines,
             address=address,
-            discounts=info.context.discounts,
+            discounts=discounts,
         )
         amount = data.get("amount", checkout_total.gross.amount)
         clean_checkout_shipping(checkout_info, lines, PaymentErrorCode)
@@ -297,33 +300,54 @@ class CheckoutPaymentCreate(BaseMutation, I18nMixin):
             "customer_user_agent": info.context.META.get("HTTP_USER_AGENT"),
         }
 
-        cancel_active_payments(checkout)
-
         metadata = data.get("metadata")
 
         if metadata is not None:
             cls.validate_metadata_keys(metadata)
             metadata = {data.key: data.value for data in metadata}
 
-        payment = None
-        if amount != 0:
-            store_payment_method = (
-                data.get("store_payment_method") or StorePaymentMethod.NONE
+        # The payment creation and deactivation of old payments should happened in the
+        # transaction to avoid creating multiple active payments.
+        with transaction.atomic():
+            # The checkout lock is used to prevent processing checkout completion
+            # and new payment creation. This kind of case could result in the missing
+            # payments, that were created for the checkout that was already converted
+            # to an order.
+            checkout = (
+                checkout_models.Checkout.objects.select_for_update()
+                .filter(pk=checkout_info.checkout.pk)
+                .first()
             )
-            payment = create_payment(
-                gateway=gateway,
-                payment_token=data.get("token", ""),
-                total=amount,
-                currency=checkout.currency,
-                email=checkout.get_customer_email(),
-                extra_data=extra_data,
-                # FIXME this is not a customer IP address. It is a client storefront ip
-                customer_ip_address=get_client_ip(info.context),
-                checkout=checkout,
-                return_url=data.get("return_url"),
-                store_payment_method=store_payment_method,
-                metadata=metadata,
-            )
+
+            if not checkout:
+                raise ValidationError(
+                    "Checkout doesn't exist anymore.",
+                    code=PaymentErrorCode.NOT_FOUND.value,
+                )
+
+            cancel_active_payments(checkout)
+
+            payment = None
+            if amount != 0:
+                store_payment_method = (
+                    data.get("store_payment_method") or StorePaymentMethod.NONE
+                )
+
+                payment = create_payment(
+                    gateway=gateway,
+                    payment_token=data.get("token", ""),
+                    total=amount,
+                    currency=checkout.currency,
+                    email=checkout.get_customer_email(),
+                    extra_data=extra_data,
+                    # FIXME this is not a customer IP address.
+                    # It is a client storefront ip
+                    customer_ip_address=get_client_ip(info.context),
+                    checkout=checkout,
+                    return_url=data.get("return_url"),
+                    store_payment_method=store_payment_method,
+                    metadata=metadata,
+                )
 
         return CheckoutPaymentCreate(payment=payment, checkout=checkout)
 
@@ -351,10 +375,11 @@ class PaymentCapture(BaseMutation):
             if payment.order
             else payment.checkout.channel.slug
         )
+        manager = get_plugin_manager_promise(info.context).get()
         try:
             gateway.capture(
                 payment,
-                info.context.plugins,
+                manager,
                 amount=amount,
                 channel_slug=channel_slug,
             )
@@ -381,10 +406,11 @@ class PaymentRefund(PaymentCapture):
             if payment.order
             else payment.checkout.channel.slug
         )
+        manager = get_plugin_manager_promise(info.context).get()
         try:
             gateway.refund(
                 payment,
-                info.context.plugins,
+                manager,
                 amount=amount,
                 channel_slug=channel_slug,
             )
@@ -416,8 +442,9 @@ class PaymentVoid(BaseMutation):
             if payment.order
             else payment.checkout.channel.slug
         )
+        manager = get_plugin_manager_promise(info.context).get()
         try:
-            gateway.void(payment, info.context.plugins, channel_slug=channel_slug)
+            gateway.void(payment, manager, channel_slug=channel_slug)
             payment.refresh_from_db()
         except PaymentError as e:
             raise ValidationError(str(e), code=PaymentErrorCode.PAYMENT_ERROR.value)
@@ -474,9 +501,9 @@ class PaymentInitialize(BaseMutation):
     @classmethod
     def perform_mutation(cls, _root, info, gateway, channel, payment_data):
         cls.validate_channel(channel_slug=channel)
-
+        manager = get_plugin_manager_promise(info.context).get()
         try:
-            response = info.context.plugins.initialize_payment(
+            response = manager.initialize_payment(
                 gateway, payment_data, channel_slug=channel
             )
         except PaymentError as e:
@@ -536,7 +563,7 @@ class PaymentCheckBalance(BaseMutation):
 
     @classmethod
     def perform_mutation(cls, _root, info, **data):
-        manager = info.context.plugins
+        manager = get_plugin_manager_promise(info.context).get()
         gateway_id = data["input"]["gateway_id"]
         money = data["input"]["card"].get("money", {})
 
@@ -664,7 +691,9 @@ class TransactionCreate(BaseMutation):
         return False
 
     @classmethod
-    def validate_metadata_keys(cls, metadata_list: List[dict], field_name, error_code):
+    def validate_metadata_keys(  # type: ignore
+        cls, metadata_list: List[dict], field_name, error_code
+    ):
         if metadata_contains_empty_key(metadata_list):
             raise ValidationError(
                 {
@@ -810,10 +839,11 @@ class TransactionCreate(BaseMutation):
         else:
             transaction_data["order_id"] = order_or_checkout_instance.pk
             if transaction_event_data:
+                app = get_app_promise(info.context).get()
                 transaction_event(
                     order=order_or_checkout_instance,
                     user=info.context.user,
-                    app=info.context.app,
+                    app=app,
                     reference=transaction_event_data.get("reference", ""),
                     status=transaction_event_data["status"],
                     name=transaction_event_data.get("name", ""),
@@ -921,10 +951,11 @@ class TransactionUpdate(TransactionCreate):
         if transaction_event_data := data.get("transaction_event"):
             cls.create_transaction_event(transaction_event_data, instance)
             if instance.order_id:
+                app = get_app_promise(info.context).get()
                 transaction_event(
                     order=instance.order,
                     user=info.context.user,
-                    app=info.context.app,
+                    app=app,
                     reference=transaction_event_data.get("reference", ""),
                     status=transaction_event_data["status"],
                     name=transaction_event_data.get("name", ""),
@@ -969,7 +1000,7 @@ class TransactionRequestAction(BaseMutation):
         for required_permission in required_permissions:
             # We want to allow to call this mutation for requestor with one of following
             # permission: manage_orders, handle_payments
-            if requestor.has_perm(required_permission):
+            if requestor and requestor.has_perm(required_permission):
                 return True
         return False
 
@@ -1001,12 +1032,14 @@ class TransactionRequestAction(BaseMutation):
             if transaction.order_id
             else transaction.checkout.channel.slug
         )
+        app = get_app_promise(info.context).get()
+        manager = get_plugin_manager_promise(info.context).get()
         action_kwargs = {
             "channel_slug": channel_slug,
             "user": info.context.user,
-            "app": info.context.app,
+            "app": app,
             "transaction": transaction,
-            "manager": info.context.plugins,
+            "manager": manager,
         }
 
         try:

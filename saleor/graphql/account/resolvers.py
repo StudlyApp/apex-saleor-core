@@ -157,8 +157,7 @@ def resolve_address_validation_rules(
 
 
 @traced_resolver
-def resolve_payment_sources(info, user: models.User, channel_slug: str):
-    manager = info.context.plugins
+def resolve_payment_sources(_info, user: models.User, manager, channel_slug: str):
     stored_customer_accounts = (
         (gtw.id, fetch_customer_id(user, gtw.id))
         for gtw in gateway.list_gateways(manager, channel_slug)
@@ -199,29 +198,27 @@ def prepare_graphql_payment_sources_type(payment_sources):
 
 
 @traced_resolver
-def resolve_address(info, id):
+def resolve_address(info, id, app):
     user = info.context.user
-    app = info.context.app
     _, address_pk = from_global_id_or_error(id, Address)
     if app and app.has_perm(AccountPermissions.MANAGE_USERS):
         return models.Address.objects.filter(pk=address_pk).first()
-    if user and not user.is_anonymous:
+    if user:
         return user.addresses.filter(id=address_pk).first()
     raise PermissionDenied(
         permissions=[AccountPermissions.MANAGE_USERS, AuthorizationFilters.OWNER]
     )
 
 
-def resolve_addresses(info, ids):
+def resolve_addresses(info, ids, app):
     user = info.context.user
-    app = info.context.app
     ids = [
         from_global_id_or_error(address_id, Address, raise_error=True)[1]
         for address_id in ids
     ]
     if app and app.has_perm(AccountPermissions.MANAGE_USERS):
         return models.Address.objects.filter(id__in=ids)
-    if user and not user.is_anonymous:
+    if user:
         return user.addresses.filter(id__in=ids)
     return models.Address.objects.none()
 

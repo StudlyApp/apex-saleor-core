@@ -13,25 +13,25 @@ from celery import group
 from celery.exceptions import MaxRetriesExceededError, Retry
 from celery.utils.log import get_task_logger
 from django.conf import settings
+from django.urls import reverse
 from google.cloud import pubsub_v1
 from requests.exceptions import RequestException
 
+from ...app.headers import AppHeaders, DeprecatedAppHeaders
 from ...celeryconf import app
 from ...core import EventDeliveryStatus
 from ...core.models import EventDelivery, EventPayload
 from ...core.tracing import webhooks_opentracing_trace
+from ...core.utils import build_absolute_uri
 from ...graphql.webhook.subscription_payload import (
     generate_payload_from_subscription,
     initialize_request,
 )
+from ...graphql.webhook.subscription_types import WEBHOOK_TYPES_MAP
 from ...payment import PaymentError
 from ...site.models import Site
 from ...webhook import observability
-from ...webhook.event_types import (
-    SUBSCRIBABLE_EVENTS,
-    WebhookEventAsyncType,
-    WebhookEventSyncType,
-)
+from ...webhook.event_types import WebhookEventAsyncType, WebhookEventSyncType
 from ...webhook.observability import WebhookData
 from ...webhook.utils import get_webhooks_for_event
 from . import signature_for_payload
@@ -45,7 +45,7 @@ from .utils import (
 )
 
 if TYPE_CHECKING:
-    from ...app.models import App
+    from ...webhook.models import Webhook
 
 logger = logging.getLogger(__name__)
 task_logger = get_task_logger(__name__)
@@ -81,7 +81,7 @@ def create_deliveries_for_subscriptions(
     :param requestor: used in subscription webhooks to generate meta data for payload.
     :return: List of event deliveries to send via webhook tasks.
     """
-    if event_type not in SUBSCRIBABLE_EVENTS:
+    if event_type not in WEBHOOK_TYPES_MAP:
         logger.info(
             "Skipping subscription webhook. Event %s is not subscribable.", event_type
         )
@@ -121,7 +121,7 @@ def create_deliveries_for_subscriptions(
 
 
 def create_delivery_for_subscription_sync_event(
-    event_type, subscribable_object, webhook, requestor=None
+    event_type, subscribable_object, webhook, requestor=None, request=None
 ) -> Optional[EventDelivery]:
     """Generate webhook payload based on subscription query and create delivery object.
 
@@ -132,19 +132,23 @@ def create_delivery_for_subscription_sync_event(
     :param subscribable_object: subscribable object to process via subscription query.
     :param webhook: webhook object for which delivery will be created.
     :param requestor: used in subscription webhooks to generate meta data for payload.
+    :param request: used to share context between sync event calls
     :return: List of event deliveries to send via webhook tasks.
     """
-    if event_type not in SUBSCRIBABLE_EVENTS:
+    if event_type not in WEBHOOK_TYPES_MAP:
         logger.info(
             "Skipping subscription webhook. Event %s is not subscribable.", event_type
         )
         return None
 
+    if not request:
+        request = initialize_request(requestor, event_type in WebhookEventSyncType.ALL)
+
     data = generate_payload_from_subscription(
         event_type=event_type,
         subscribable_object=subscribable_object,
         subscription_query=webhook.subscription_query,
-        request=initialize_request(requestor, event_type in WebhookEventSyncType.ALL),
+        request=request,
         app=webhook.app,
     )
     if not data:
@@ -152,7 +156,7 @@ def create_delivery_for_subscription_sync_event(
         # in separate PR to ensure proper handling for all sync events.
         # It was implemented when sync webhooks were handling payment events only.
         raise PaymentError(
-            "No payload was generated with subscription for event: %s" % event_type
+            f"No payload was generated with subscription for event: {event_type}"
         )
     event_payload = EventPayload.objects.create(payload=json.dumps({**data}))
     event_delivery = EventDelivery.objects.create(
@@ -211,13 +215,11 @@ def group_webhooks_by_subscription(webhooks):
 def trigger_webhook_sync(
     event_type: str,
     data: str,
-    app: "App",
+    webhook: Optional["Webhook"],
     subscribable_object=None,
     timeout=None,
 ) -> Optional[Dict[Any, Any]]:
     """Send a synchronous webhook request."""
-    webhooks = get_webhooks_for_event(event_type, app.webhooks.all())
-    webhook = webhooks.first()
     if not webhook:
         raise PaymentError(f"No payment webhook found for event: {event_type}.")
     if webhook.subscription_query:
@@ -228,7 +230,6 @@ def trigger_webhook_sync(
         )
         if not delivery:
             return None
-
     else:
         event_payload = EventPayload.objects.create(payload=data)
         delivery = EventDelivery.objects.create(
@@ -240,7 +241,7 @@ def trigger_webhook_sync(
     kwargs = {}
     if timeout:
         kwargs = {"timeout": timeout}
-    return send_webhook_request_sync(app.name, delivery, **kwargs)
+    return send_webhook_request_sync(webhook.app.name, delivery, **kwargs)
 
 
 R = TypeVar("R")
@@ -250,6 +251,8 @@ def trigger_all_webhooks_sync(
     event_type: str,
     generate_payload: Callable,
     parse_response: Callable[[Any], Optional[R]],
+    subscribable_object=None,
+    requestor=None,
 ) -> Optional[R]:
     """Send all synchronous webhook request for given event type.
 
@@ -260,19 +263,35 @@ def trigger_all_webhooks_sync(
     this function returns None.
     """
     webhooks = get_webhooks_for_event(event_type)
+    request_context = None
     event_payload = None
-    if webhooks:
-        event_payload = EventPayload.objects.create(payload=generate_payload())
     for webhook in webhooks:
-        delivery = EventDelivery.objects.create(
-            status=EventDeliveryStatus.PENDING,
-            event_type=event_type,
-            payload=event_payload,
-            webhook=webhook,
-        )
+        if webhook.subscription_query:
+            if request_context is None:
+                request_context = initialize_request(
+                    requestor, event_type in WebhookEventSyncType.ALL
+                )
+            delivery = create_delivery_for_subscription_sync_event(
+                event_type=event_type,
+                subscribable_object=subscribable_object,
+                webhook=webhook,
+                request=request_context,
+                requestor=requestor,
+            )
+            if not delivery:
+                return None
+        else:
+            if event_payload is None:
+                event_payload = EventPayload.objects.create(payload=generate_payload())
+            delivery = EventDelivery.objects.create(
+                status=EventDeliveryStatus.PENDING,
+                event_type=event_type,
+                payload=event_payload,
+                webhook=webhook,
+            )
+
         response_data = send_webhook_request_sync(webhook.app.name, delivery)
-        parsed_response = parse_response(response_data)
-        if parsed_response:
+        if parsed_response := parse_response(response_data):
             return parsed_response
     return None
 
@@ -294,12 +313,13 @@ def send_webhook_using_http(
     headers = {
         "Content-Type": "application/json",
         # X- headers will be deprecated in Saleor 4.0, proper headers are without X-
-        "X-Saleor-Event": event_type,
-        "X-Saleor-Domain": domain,
-        "X-Saleor-Signature": signature,
-        "Saleor-Event": event_type,
-        "Saleor-Domain": domain,
-        "Saleor-Signature": signature,
+        DeprecatedAppHeaders.EVENT_TYPE: event_type,
+        DeprecatedAppHeaders.DOMAIN: domain,
+        DeprecatedAppHeaders.SIGNATURE: signature,
+        AppHeaders.EVENT_TYPE: event_type,
+        AppHeaders.DOMAIN: domain,
+        AppHeaders.SIGNATURE: signature,
+        AppHeaders.API_URL: build_absolute_uri(reverse("api"), domain),
     }
     try:
         response = requests.post(
@@ -355,6 +375,10 @@ def send_webhook_using_aws_sqs(target_url, message, domain, signature, event_typ
 
     msg_attributes = {
         "SaleorDomain": {"DataType": "String", "StringValue": domain},
+        "SaleorApiUrl": {
+            "DataType": "String",
+            "StringValue": build_absolute_uri(reverse("api"), domain),
+        },
         "EventType": {"DataType": "String", "StringValue": event_type},
     }
     if signature:
@@ -392,6 +416,7 @@ def send_webhook_using_google_cloud_pubsub(
                 topic_name,
                 message,
                 saleorDomain=domain,
+                saleorApiUrl=build_absolute_uri(reverse("api"), domain),
                 eventType=event_type,
                 signature=signature,
             )
@@ -427,6 +452,7 @@ def send_webhook_using_scheme_method(
 
 
 @app.task(
+    queue=settings.WEBHOOK_CELERY_QUEUE_NAME,
     bind=True,
     retry_backoff=10,
     retry_kwargs={"max_retries": 5},

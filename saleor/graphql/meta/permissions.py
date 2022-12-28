@@ -25,6 +25,7 @@ from ...core.permissions import (
     ShippingPermissions,
 )
 from ...payment.utils import payment_owned_by_user
+from ..app.dataloaders import get_app_promise
 from ..core.utils import from_global_id_or_error
 
 
@@ -48,7 +49,7 @@ def public_user_permissions(info, user_pk: int) -> List[BasePermissionEnum]:
                 )
             }
         )
-    if info.context.user.pk == user.pk:
+    if info.context.user and info.context.user.pk == user.pk:
         return []
     if user.is_staff:
         return [AccountPermissions.MANAGE_STAFF]
@@ -86,17 +87,18 @@ def menu_permissions(_info, _object_pk: Any) -> List[BasePermissionEnum]:
 
 def app_permissions(info, object_pk: str) -> List[BasePermissionEnum]:
     auth_token = info.context.decoded_auth_token or {}
+    app = get_app_promise(info.context).get()
     if auth_token.get("type") == JWT_THIRDPARTY_ACCESS_TYPE:
         _, app_id = from_global_id_or_error(auth_token["app"], "App")
     else:
-        app_id = info.context.app.id if info.context.app else None
+        app_id = app.id if app else None
     if app_id is not None and int(app_id) == int(object_pk):
         return []
     return [AppPermission.MANAGE_APPS]
 
 
 def private_app_permssions(info, object_pk: str) -> List[BasePermissionEnum]:
-    app = info.context.app
+    app = get_app_promise(info.context).get()
     if app and app.pk == int(object_pk):
         return []
     return [AppPermission.MANAGE_APPS]
@@ -132,7 +134,8 @@ def discount_permissions(_info, _object_pk: Any) -> List[BasePermissionEnum]:
 
 def public_payment_permissions(info, payment_pk: int) -> List[BasePermissionEnum]:
     context_user = info.context.user
-    if info.context.app is not None or context_user.is_staff:
+    app = get_app_promise(info.context).get()
+    if app or (context_user and context_user.is_staff):
         return [PaymentPermissions.HANDLE_PAYMENTS]
     if payment_owned_by_user(payment_pk, context_user):
         return []
@@ -140,13 +143,21 @@ def public_payment_permissions(info, payment_pk: int) -> List[BasePermissionEnum
 
 
 def private_payment_permissions(info, _object_pk: Any) -> List[BasePermissionEnum]:
-    if info.context.app is not None or info.context.user.is_staff:
+    app = get_app_promise(info.context).get()
+    if app is not None or info.context.user.is_staff:
         return [PaymentPermissions.HANDLE_PAYMENTS]
     raise PermissionDenied(permissions=[PaymentPermissions.HANDLE_PAYMENTS])
 
 
 def gift_card_permissions(_info, _object_pk: Any) -> List[BasePermissionEnum]:
     return [GiftcardPermissions.MANAGE_GIFT_CARD]
+
+
+def tax_permissions(_info, _object_pk: int) -> List[BasePermissionEnum]:
+    return [
+        CheckoutPermissions.HANDLE_TAXES,
+        CheckoutPermissions.MANAGE_TAXES,
+    ]
 
 
 PUBLIC_META_PERMISSION_MAP = {
@@ -174,6 +185,8 @@ PUBLIC_META_PERMISSION_MAP = {
     "Sale": discount_permissions,
     "ShippingMethodType": shipping_permissions,
     "ShippingZone": shipping_permissions,
+    "TaxConfiguration": tax_permissions,
+    "TaxClass": tax_permissions,
     "User": public_user_permissions,
     "Voucher": discount_permissions,
     "Warehouse": product_permissions,
@@ -206,6 +219,8 @@ PRIVATE_META_PERMISSION_MAP = {
     "ShippingMethod": shipping_permissions,
     "ShippingMethodType": shipping_permissions,
     "ShippingZone": shipping_permissions,
+    "TaxConfiguration": tax_permissions,
+    "TaxClass": tax_permissions,
     "User": private_user_permissions,
     "Voucher": discount_permissions,
     "Warehouse": product_permissions,
