@@ -2,6 +2,35 @@
 
 All notable, unreleased changes to this project will be documented in this file. For the released changes, please visit the [Releases](https://github.com/mirumee/saleor/releases) page.
 
+# 3.10.0
+
+### GraphQL API
+
+- Add ability to filter and sort products of a category - #10917 by @yemeksepeti-cihankarluk, @ogunheper
+  - Add `filter` argument to `Category.products`
+  - Add `sortBy` argument to `Category.products`
+  - Allow to mutate objects, by newly added `externalReference` field, instead of Saleor-assigned ID. Apply to following models:
+    - `Product`
+    - `ProductVariant`
+    - `Attribute`
+    - `AttributeValue`
+    - `Order`
+    - `User`
+    - `Warehouse`
+- Extend invoice object types with `Order` references - #11505 by @przlada
+  - Add `Invoice.order` field
+  - Add `InvoiceRequested.order`, `InvoiceDeleted.order` and `InvoiceSent.order` fields
+- Add support for metadata for `Address` model - #11701 by @IKarbowiak
+
+### Other changes
+- Fix fetching the `checkout.availableCollectionPoints` - #11489 by @IKarbowiak
+- Move checkout metadata to separate model - #11264  by @jakubkuc
+- Add ability to set a custom Celery queue for async webhook - #11511 by @NyanKiyoshi
+- Remove `CUSTOMER_UPDATED` webhook trigger from address mutations - #11395 by @jakubkuc
+- Drop `Django.Auth` - #11305 by @fowczarek
+- Propagate voucher discount between checkout lines when charge_taxes is disabled - #11632 by @maarcingebala
+- Accept the gift card code provided in the input - by @mociepka
+
 # 3.9.0
 
 ### Highlights
@@ -24,35 +53,24 @@ All notable, unreleased changes to this project will be documented in this file.
 
 ### GraphQL API
 
-- Add `attribute` field to `AttributeValueTranslatableContent` type - #11028 by @zedzior
+- Add `attribute` field to `AttributeValueTranslatableContent` type. #11028 by @zedzior
 - Add new properties in the `Product` type - #10537 by @kadewu
   - Add new fields: `Product.attribute`, `Product.variant`
   - Add `sortBy` argument to `Product.media`
-- Allow assigning attribute value using its ID. Add to `AttributeValueInput` dedicated field for each input type - #11206 by @zedzior
-- Add new queries - #10537 by @kadewu
-  - `attribute` - allow fetching the single attribute by `slug`
-  - `variant`- allow fetching the single variant by the product variant `id` or `sku`
-- Allow sorting media of the product - #10537 by @kadewu
 - Allow assigning attribute value using its ID. Add to `AttributeValueInput` dedicated field for each input type. #11206 by @zedzior
-- Add ability to filter and sort products of a category - #10917 by @yemeksepeti-cihankarluk, @ogunheper
-  - Add `filter` argument to `Category.products`
-  - Add `sortBy` argument to `Category.products`
-
-### Saleor Apps
-
-- Include fully qualified API URL `Saleor-Api-Url` in communication with Apps. #11223 by @przlada
-- Add metadata on order line payload notifications. #10954 by @CarlesLopezMagem
 
 ### Other changes
 
 - Re-enable 5 minute database connection persistence by default - #11074 + #11100 by @NyanKiyoshi
-  - Set `DB_CONN_MAX_AGE=0` to disable this behavior (adds overhead to requests)
+  <br/>Set `DB_CONN_MAX_AGE=0` to disable this behavior (adds overhead to requests)
 - Bump cryptography to 38.0.3: use OpenSSL 3.0.7 - #11126 by @NyanKiyoshi
-- Include fully qualified API URL `Saleor-Api-Url` in communication with Apps - #11223 by @przlada
+- Add exif image validation - #11224 by @IKarbowiak
+- Include fully qualified API URL `Saleor-Api-Url` in communication with Apps. #11223 by @przlada
+- Add metadata on order line payload notifications. #10954 by @CarlesLopezMagem
 - Make email authentication case-insensitive. #11284 by @zedzior
 - Fix the observability reporter to obfuscate URLs. #11282 by @przlada
-- Add exif image validation - #11224 by @IKarbowiak
 - Add HTTP headers filtering to observability reporter. #11285 by @przlada
+- Deactivate Webhook before deleting and handle IntegrityErrors - #11239 @jakubkuc
 
 # 3.8.0
 
